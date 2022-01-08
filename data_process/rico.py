@@ -99,7 +99,7 @@ def filter_same_overlap_ele(layout):
 
 if __name__ == "__main__":
 
-    flist = glob.glob(rf'../../data/RICO/semantic-annotation/*.json')
+    flist = glob.glob(rf"../../data/RICO/semantic-annotation/*.json")
     flist.sort(key=lambda x: int(x.split('\\')[-1][:-5]))
     flist = flist
     print(len(flist))
