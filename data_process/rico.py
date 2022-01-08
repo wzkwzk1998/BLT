@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
     print(len(rico_dataset)) 
 
-    with open('./dataset/RICO.pkl','wb')as f:
+    with open('../dataset/RICO.pkl','wb')as f:
         pickle.dump(rico_dataset,f)
     # with open('./dataset/RICO.json','w')as f:
     #     json.dump(rico_dataset,f)
