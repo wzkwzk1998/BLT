@@ -6,9 +6,7 @@ import tqdm
 import random
 import torch
 import torch.nn as nn
-
-from test import mask_ind
-
+from transformers.models.bert import modeling_bert
 
 sys.path.append(path.Path(__file__).abspath().parent.parent)
 sys.path.append(path.Path(__file__).abspath().parent)
@@ -19,6 +17,7 @@ from feeder import ricoDataset
 from torch.utils.data import DataLoader
 from model.BLTModel import BLTModel
 from transformers import T5Model, T5Tokenizer, T5Config, AdamW
+from transformers import BertModel, BertTokenizer, BertConfig
 
 
 
@@ -51,7 +50,9 @@ def load_model(args, model_config):
     if CONFIG.MODEL.model == 'BLT_MODEL':
         model = BLTModel()
     elif CONFIG.MODEL.model == 'T5':
-        model = T5Model.from_pretrained('t5-small')
+        model = T5Model.from_pretrained('t5-base')
+    elif CONFIG.MODEL.model == 'BERT':
+        model = BertModel('bert-base-uncased')
     return model
 
 
@@ -74,17 +75,25 @@ def load_data():
 
     return data_loader
 
-def set_config():
-    model_config = T5Config()
+def get_config_and_tokenizer():
+    if CONFIG.MODEL.model == 'T5':
+        model_config = T5Config()
+        model_tokenizer = T5Tokenizer('t5-base')
+    elif CONFIG.MODEL.model == 'Bert':
+        model_config =  BertConfig()
+        model_tokenizer = BertTokenizer('bert-base-uncased')
 
-def mask_token(tokens, prob, ind):
+def mask_token(tokens, prob, idx):
     '''
     mask a token
     '''
     # TODO: implement mask token
     if prob < 0.15:
-        pass
-    
+        if CONFIG.MODEL.model == 'bert':
+            tokens[idx] = '[MASK]'
+        elif CONFIG.MODEL.model == 'T5':
+            tokens[idx] = '<extra_id_0>'
+
 
 def random_mask(data):
     for sentence in data:
@@ -114,15 +123,19 @@ def random_mask(data):
                 prob_2 = random.random()
                 mask_token(tokens, prob_2, i * 5 + 4)
 
+
+
+def train(model, optim, dataloader):
+    for epoch in range(CONFIG.MODEL):
+        #TODO: 写trian代码
+        pass
         
-
-
 
 def main():
     args = load_args()
 
     # load model
-    model_config = set_config()
+    model_config, model_tokenizer = get_config_and_tokenizer()
     model = load_model(args, model_config)
     dev = set_gpu(args.devices, model)
 
@@ -130,16 +143,21 @@ def main():
     optim = load_optim(model)
     data_loader = load_data()
 
-    tokenizer = T5Tokenizer.from_pretrained('t5-small')
-    for data in data_loader:
-        random_mask(data)
-        break
+    if args.type == 'train':
+        train(model, optim, dataloader)
+
+
+    elif args.type == 'eval':
+        # TODO: 写测试方法
+        pass
+
+
+    
         
 
 
 def load_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epoch", type=int, help="epoch to run", default=50)
     parser.add_argument("--type", type=str, choices=['train', 'eval'], help="mode, type is train or eval", default='train')
     parser.add_argument("--devices", type=str, help="gpu to use", default="")
     args = parser.parse_args()

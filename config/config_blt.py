@@ -15,6 +15,7 @@ CONFIG.DATA.num_workers = 0
 # model param
 CONFIG.MODEL = EasyDict()
 CONFIG.MODEL.model = 'T5'
+CONFIG.MODEL.epoch = 50
 
 # optim param
 CONFIG.OPTIM = EasyDict()
