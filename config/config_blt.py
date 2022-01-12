@@ -9,7 +9,7 @@ CONFIG=EasyDict()
 #data param
 CONFIG.DATA = EasyDict()
 CONFIG.DATA.data_path = './dataset/RICO.pkl'
-CONFIG.DATA.batch_size = 64
+CONFIG.DATA.batch_size = 16
 CONFIG.DATA.num_workers = 0
 
 # model param
