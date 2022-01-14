@@ -14,8 +14,9 @@ CONFIG.DATA.num_workers = 0
 
 # model param
 CONFIG.MODEL = EasyDict()
-CONFIG.MODEL.model = 'Bert'
-CONFIG.MODEL.epoch = 1
+CONFIG.MODEL.model = 'BertForMaskedLM'
+CONFIG.MODEL.epoch = 2
+CONFIG.MODEL.loss = 'CrossEntropy'
 
 # optim param
 CONFIG.OPTIM = EasyDict()
