@@ -190,30 +190,41 @@ def num_to_word(pred):
     return ' '.join(seq)
 
 
-def mask_by_pred(sequence, mask_ids):
+def mask_by_mask_ids(preds, mask_ids):
     '''
     在这个函数中，我们需要我们mask_ids来指示哪些需要mask掉
     '''
     if CONFIG.MODEL.model == 'Bert' or CONFIG.MODEL.model == 'BertForMaskedLM':
-        mask_token = '[MASK]'
+        mask_token_idx = 103
     elif CONFIG.MODEL.model == 'T5':
-        mask_token = '<extra_id_0>'
+        mask_token_idx = 32099
 
-    print("mask_ids shape: {}".format(mask_ids.shape))
-    result = []
-    for seq, mask in zip(sequence, mask_ids):
-        tokens = seq.split()
-        tokens[mask] = mask_token
-        result.append(' '.join(tokens))
+    print(mask_ids)
+    for seq, mask in zip(preds, mask_ids):
+        seq[mask_ids] = mask_token_idx
 
-    return result    
+    return preds   
 
 
-def recover_seq(sequence, labels):
+def recover_class_by_label(preds, labels):
     # TODO: 完成将对应的class重新赋值给seq的方法
-    pass
+    for pred, label in zip(preds, labels):
+        for idx in range(int(len(pred) / 5)):
+            pred[idx * 5] = label[idx * 5]
+    
+    return preds
 
-  
+def truncate_by_label(seqs, labels):
+    result = []
+    for seq, label in zip(seqs, labels):
+        tokens = seq.split()
+        tokens_label = label.split()
+        result.append(' '.join(tokens[:len(tokens_label)]))
+
+    return result
+        
+
+        
 
 def main():
     args = load_args()
@@ -239,9 +250,9 @@ def main():
                 label = data[:]
                 data, mask_ids = random_mask(data)
 
-                print(data)
-                print(label)
-                print(mask_ids)
+                # print(data)
+                # print(label)
+                # print(mask_ids)
 
                 inputs = model_tokenizer(data, return_tensors='pt', padding=True)
                 label_out = model_tokenizer(label, return_tensors='pt', padding=True)
@@ -260,10 +271,10 @@ def main():
                 optim.step()
                 print(output.loss)
 
-            
 
 
-    if args.type == 'train' and CONFIG.MODEL.model != 'BertForMaskedLM':
+
+    elif args.type == 'train' and CONFIG.MODEL.model != 'BertForMaskedLM':
         
         for epoch in range(CONFIG.MODEL.epoch):
             model.train()
@@ -306,47 +317,57 @@ def main():
             inputs = model_tokenizer(data, return_tensors='pt', padding=True)
             label_out = model_tokenizer(label, return_tensors='pt', padding=True)
 
+            # print(inputs)
             # to dev
             input_ids = inputs['input_ids'].to(dev)
             attention_mask = inputs['attention_mask'].to(dev)
             token_type_ids = inputs['token_type_ids'].to(dev)
             labels = label_out['input_ids'].to(dev)
 
-            ele_num = int((len(input_ids[1]) - 2) / 5)                      # minus two for <bos> and <eos>
+            ele_num = int(((input_ids.shape[1]) - 2) / 5)                      # minus two for <bos> and <eos>
             cardinal_for_size = cardinal_for_cor  = ele_num * 2
+            group_position = [0, 1, 2]                                      # don't mask class and size parameter
+            type_not_mask = [int(i * 5 + j + 1) for i in range(int(ele_num)) for j in group_position]
+            type_not_mask.append(0)                                             # don't mask <bos>
             
+            #generate 
             for t in range(1, int(CONFIG.EVAL.gen_t / 2)  + 1):             # t from range  1 ->  T/2       
                 output = model(input_ids, attention_mask, token_type_ids)
-                gamma = (CONFIG.EVAL.gen_t - 3 * t) / CONFIG.EVAL.gen_t
+                gamma = (CONFIG.EVAL.gen_t - 2 * t) / CONFIG.EVAL.gen_t
                 mask_num = math.ceil(gamma * cardinal_for_cor)
+
+                print(mask_num)
                 
-                logit, pred = torch.max(output.logits[:, 1:-1, :], dim=2)        # ignore <bos> and <eos>
-
-                if mask_num <= 0.0 :
-                    break 
-                else:
-                    group_position = [0, 3, 4]                                      # don't mask class and size parameter
-                    type_mask = [int(i * 5 + j) for i in range(int(ele_num)) for j in group_position]
-                    logit[:, type_mask] = float(sys.maxsize) 
-                    mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
-                    
-                    # id to seq
-                    seq = model_tokenizer.batch_decode(pred)
-                    print(seq)
-                    seq_masked = mask_by_pred(seq, mask_ids)
-                    seq_masked = recover_seq(seq_masked, label)
-                    
-                    
-
-                    inputs_uni = model_tokenizer(seq_masked, return_tensors='pt', padding=True)
-
-                    # to dev
-                    input_ids = inputs_uni['input_ids'].to(dev)
-                    attention_mask = inputs_uni['attention_mask'].to(dev)
-                    token_type_ids = inputs_uni['token_type_ids'].to(dev)
-
-
-            print(pred.shape)        
+                logit, pred = torch.max(output.logits, dim=2)        
+                
+                logit[:, type_not_mask] = float(sys.maxsize) 
+                mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
+                
+                # id to seq
+                # print("pred : {}".format(pred))
+                pred_recovered = recover_class_by_label(pred, labels[:, 1:-1])
+                pred_mask = mask_by_mask_ids(pred_recovered, mask_ids)
+                print("pred_mask shape :{}".format(pred_mask.shape))
+                print("pred_mask is : {}".format(pred_mask))
+                
+                # decode and re-encoder
+                seq = model_tokenizer.batch_decode(pred_mask)
+                print("seq : {}".format(seq))
+                seq_truncated = truncate_by_label(seq, label)
+                print(seq_truncated)
+                for seq_uni in seq_truncated:
+                    tokens = seq_uni.split()
+                    print("len : {}".format(len(tokens)))
+                inputs = model_tokenizer(seq_truncated, return_tensors='pt', padding=True)
+                
+                #to dev
+                input_ids = inputs['input_ids'].to(dev)
+                attention_mask = inputs['attention_mask'].to(dev)
+                token_type_ids = inputs['token_type_ids'].to(dev)
+                # break
+            
+            print(pred.shape)      
+            return
 
 
     elif args.type == 'eval':

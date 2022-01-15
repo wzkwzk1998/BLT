@@ -1,5 +1,8 @@
 
+from lib2to3.pgen2 import token
+from unittest import skip
 from numpy import argmax
+from torch import tensor
 import torch
 
 from transformers import DebertaTokenizer, T5Tokenizer, T5ForConditionalGeneration, T5Model
@@ -47,11 +50,12 @@ from transformers import BertModel, BertConfig, BertTokenizer, BertForMaskedLM
 # main()
 
 
-# from transformers import BertTokenizer, BertForMaskedLM
-# import torch
+from transformers import BertTokenizer, BertForMaskedLM, T5Tokenizer
+import torch
 
-# tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-# model = BertForMaskedLM.from_pretrained("bert-base-uncased")
+tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+model = BertForMaskedLM.from_pretrained("bert-base-uncased")
+# tokenizer = T5Tokenizer.from_pretrained('t5-base')
 
 # seq = 'oh my god'
 # inputs = tokenizer(seq, return_tensors='pt')
@@ -78,6 +82,20 @@ from transformers import BertModel, BertConfig, BertTokenizer, BertForMaskedLM
 
 import torch
 import sys
+
+# a = torch.tensor([[1021, 1014, 1014, 1014, 1012,  102, 1021, 1012,  103, 1064],
+#         [1021, 1014, 1014, 1014, 1021, 1021, 1015, 1012,  103, 1012]])
+# b = tokenizer.batch_decode(a)
+
+a = ['I am a big big pig', 'I am a big big big pig pig pig pig pig']
+b = tokenizer(a)
+print(b)
+
+print(b)
+for seq in b:
+    tokens = seq.split()
+    print(len(tokens))
+
 
 
 
@@ -106,21 +124,60 @@ import sys
 
 # seq = 'oh my god'
 
-b = 'aaa'
+# b = '<extra_id_99>'
+
+# inputs = tokenizer(b, padding=True)
+# print(inputs)
+# input_ids = [[101,103,1111,102]
+# seq = tokenizer.decode(input_ids, skip_special_tokens=True)
+# print(seq)
+# seq = tokenizer.batch_decode(inputs.input_ids, skip_special_tokens=False)
+# print(inputs)
+# print(seq)
+
+# a = ["I am a big pig", "I am a big big pig pig pig pig pig"]
+# inputs = tokenizer(a, return_tensors='pt', padding=True)
+# output = model(input_ids=inputs.input_ids, attention_mask=inputs.attention_mask, token_type_ids=inputs.token_type_ids)
+# print(inputs)
+# print(output.logits[0][7])
+
+# for i in range(10):
+#     num = 1
+
+# print(num)
 
 
-for i in range(10):
-    num = 1
 
-print(num)
+# a = [1,2,3,4,5,6,7]
+# idx = [1,4,5]
+
+# print(a[idx])
+
+
+# def recover_class_by_label(preds, labels):
+#     # TODO: 完成将对应的class重新赋值给seq的方法
+
+#     for pred, label in zip(preds, labels):
+#         for idx in range(int(len(pred) / 5)):
+#             print(idx)
+#             pred[idx * 5] = label[idx * 5]
+    
+#     return preds
+
+# a = torch.tensor([[1,2,3,4,5],[6,7,8,9,10]])
+# b = torch.tensor([[11,12,13,14,15],[16,17,18,19,20]])
+# a = recover_class_by_label(a, b)
+# print(a)
 
 
 
-a = [1,2,3,4,5,6,7]
-b = [11,22,33,44,55,66,77]
-idx = [1,4,7,9]
+# b = torch.max(a, dim=0)
+# print(b)
 
-print(a[idx])
+
+
+
+
 
 
 

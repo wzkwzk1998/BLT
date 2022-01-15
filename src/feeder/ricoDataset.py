@@ -64,5 +64,6 @@ class RicoDataset(Dataset):
 
 if __name__ == '__main__':
     
-    data_loader = RicoDataset(data_path='c:/Users/lenovo/Documents/Code/GitHub/BLT/dataset/RICO.pkl')
+    data_loader = RicoDataset(data_path='./dataset/RICO.pkl')
     print(data_loader.__getitem__(0))
+    print(data_loader.__getitem__(1))
