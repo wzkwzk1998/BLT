@@ -209,8 +209,8 @@ def mask_by_mask_ids(preds, mask_ids):
 def recover_class_by_label(preds, labels):
     # TODO: 完成将对应的class重新赋值给seq的方法
     for pred, label in zip(preds, labels):
-        for idx in range(int(len(pred) / 5)):
-            pred[idx * 5] = label[idx * 5]
+        for idx in range(int((len(pred) - 2) / 5)):             # minus to for <bos> and <eos>
+            pred[idx * 5 + 1] = label[idx * 5 + 1]              # ADD ONE FOR <BOS>
     
     return preds
 
@@ -317,8 +317,6 @@ def main():
             inputs = model_tokenizer(data, return_tensors='pt', padding=True)
             label_out = model_tokenizer(label, return_tensors='pt', padding=True)
 
-            # print(inputs)
-            # to dev
             input_ids = inputs['input_ids'].to(dev)
             attention_mask = inputs['attention_mask'].to(dev)
             token_type_ids = inputs['token_type_ids'].to(dev)
@@ -326,48 +324,36 @@ def main():
 
             ele_num = int(((input_ids.shape[1]) - 2) / 5)                      # minus two for <bos> and <eos>
             cardinal_for_size = cardinal_for_cor  = ele_num * 2
-            group_position = [0, 1, 2]                                      # don't mask class and size parameter
-            type_not_mask = [int(i * 5 + j + 1) for i in range(int(ele_num)) for j in group_position]
-            type_not_mask.append(0)                                             # don't mask <bos>
-            
-            #generate 
-            for t in range(1, int(CONFIG.EVAL.gen_t / 2)  + 1):             # t from range  1 ->  T/2       
-                output = model(input_ids, attention_mask, token_type_ids)
-                gamma = (CONFIG.EVAL.gen_t - 2 * t) / CONFIG.EVAL.gen_t
-                mask_num = math.ceil(gamma * cardinal_for_cor)
 
-                print(mask_num)
-                
-                logit, pred = torch.max(output.logits, dim=2)        
-                
-                logit[:, type_not_mask] = float(sys.maxsize) 
-                mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
-                
-                # id to seq
-                # print("pred : {}".format(pred))
-                pred_recovered = recover_class_by_label(pred, labels[:, 1:-1])
-                pred_mask = mask_by_mask_ids(pred_recovered, mask_ids)
-                print("pred_mask shape :{}".format(pred_mask.shape))
-                print("pred_mask is : {}".format(pred_mask))
-                
-                # decode and re-encoder
-                seq = model_tokenizer.batch_decode(pred_mask)
-                print("seq : {}".format(seq))
-                seq_truncated = truncate_by_label(seq, label)
-                print(seq_truncated)
-                for seq_uni in seq_truncated:
-                    tokens = seq_uni.split()
-                    print("len : {}".format(len(tokens)))
-                inputs = model_tokenizer(seq_truncated, return_tensors='pt', padding=True)
-                
-                #to dev
-                input_ids = inputs['input_ids'].to(dev)
-                attention_mask = inputs['attention_mask'].to(dev)
-                token_type_ids = inputs['token_type_ids'].to(dev)
-                # break
+            groups = [[0, 1, 2], [0, 3, 4]]                                      # don't mask class and size parameter
+                                         
             
-            print(pred.shape)      
-            return
+            for group in groups:
+                type_not_mask = [int(i * 5 + j + 1) for i in range(int(ele_num)) for j in group]
+                type_not_mask.append(0)                                             # don't mask <bos>
+                type_not_mask.append((ele_num * 5 + 1))                             # don't mask <eos>
+                #generate size
+                for t in range(1, int(CONFIG.EVAL.gen_t / 2)  + 1):             # t from range  1 ->  T/2       
+                    output = model(input_ids, attention_mask, token_type_ids)
+                    gamma = (CONFIG.EVAL.gen_t - 2 * t) / CONFIG.EVAL.gen_t
+                    mask_num = math.ceil(gamma * cardinal_for_size)
+                    
+                    logit, pred = torch.max(output.logits, dim=2)        
+                    
+                    logit[:, type_not_mask] = float(sys.maxsize) 
+                    mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
+                    
+                    # id to seq
+                    # print("pred : {}".format(pred))
+                    pred_recovered = recover_class_by_label(pred, labels)
+                    pred_mask = mask_by_mask_ids(pred_recovered, mask_ids)
+                    print("mask_num : {}".format(mask_num))
+                    print("input_ids shape : {}".format(input_ids.shape))
+                    print("input_ids is : {}".format(input_ids))
+                    print("pred_mask shape :{}".format(pred_mask.shape))
+                    print("pred_mask is : {}".format(pred_mask))
+            
+            print(pred.shape)
 
 
     elif args.type == 'eval':
@@ -379,8 +365,6 @@ def main():
             label = data[:]
             data = mask_cor_and_size(data)
             
-            print(data)
-
             inputs = model_tokenizer(data, return_tensors='pt', padding=True)
             label_out = model_tokenizer(label, return_tensors='pt', padding=True)
 
