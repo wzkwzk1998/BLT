@@ -2,6 +2,7 @@ from ast import arg
 from lib2to3.pgen2 import token
 from lib2to3.pgen2.tokenize import tokenize
 from math import gamma
+import numpy as np
 import os
 from statistics import mode
 import sys
@@ -12,20 +13,19 @@ import random
 import math
 import torch
 import torch.nn as nn
+import datetime
 from transformers.models.bert import modeling_bert
+from transformers import T5ForConditionalGeneration, T5Model, T5Tokenizer, T5Config, AdamW
+from transformers import BertModel, BertTokenizer, BertConfig, BertForMaskedLM
+from torch.utils.data import DataLoader
+
 
 sys.path.append(path.Path(__file__).abspath().parent.parent)
 sys.path.append(path.Path(__file__).abspath().parent)
+from utils.metric_tools import cal_alignment, cal_IoU, cal_overlap, overlap
 from config.config_blt import CONFIG
 from feeder import ricoDataset
-
-
-from torch.utils.data import DataLoader
 from model.BLTModel import BLTModel
-
-from transformers import T5ForConditionalGeneration, T5Model, T5Tokenizer, T5Config, AdamW
-from transformers import BertModel, BertTokenizer, BertConfig, BertForMaskedLM
-
 
 
 
@@ -85,8 +85,8 @@ def load_optim(model):
     return optim
 
 
-def load_data():
-    data_loader =  DataLoader(ricoDataset.RicoDataset(CONFIG.DATA.data_path),
+def load_data(data_path):
+    data_loader =  DataLoader(ricoDataset.RicoDataset(data_path),
                             batch_size=CONFIG.DATA.batch_size,
                             shuffle=False,
                             num_workers=CONFIG.DATA.num_workers)
@@ -153,6 +153,7 @@ def random_mask(data):
 
     return data, mask_idx
 
+
 def mask_cor_and_size(data):
     '''
     mask all coordinate and size parameter in a batch
@@ -199,7 +200,6 @@ def mask_by_mask_ids(preds, mask_ids):
     elif CONFIG.MODEL.model == 'T5':
         mask_token_idx = 32099
 
-    print(mask_ids)
     for seq, mask in zip(preds, mask_ids):
         seq[mask_ids] = mask_token_idx
 
@@ -207,48 +207,48 @@ def mask_by_mask_ids(preds, mask_ids):
 
 
 def recover_class_by_label(preds, labels):
-    # TODO: 完成将对应的class重新赋值给seq的方法
     for pred, label in zip(preds, labels):
         for idx in range(int((len(pred) - 2) / 5)):             # minus to for <bos> and <eos>
             pred[idx * 5 + 1] = label[idx * 5 + 1]              # ADD ONE FOR <BOS>
     
     return preds
 
-def truncate_by_label(seqs, labels):
+def truncate_by_label(preds, labels):
     result = []
-    for seq, label in zip(seqs, labels):
-        tokens = seq.split()
+    for pred, label in zip(preds, labels):
         tokens_label = label.split()
-        result.append(' '.join(tokens[:len(tokens_label)]))
-
+        result.append(pred[1:len(tokens_label)+1].tolist())
     return result
+
+def seq_to_num(seqs):
+    result = []
+    for seq in seqs:
+        result_temp = []
+        tokens = seq.split()
+        if len(tokens) % 5 != 0:                     # 如果出现了像'.'这样的东西导致长度缩短，那么整个layout直接不要
+            continue
+        ele_num = int(len(tokens) / 5)
+        for i in range(ele_num):
+            result_ele = []
+            for j in range(5):
+                if not tokens[i * 5 + j].isdigit():
+                    break
+                result_ele.append(int(tokens[i * 5 + j]))
+            if len(result_ele) == 5:
+                result_temp.append(result_ele)
+        result.append(result_temp)
+    return result
+    
         
+def train(model, model_tokenizer, dev, optim, train_data_loader, test_data_loader):
 
-        
+    for epoch in range(CONFIG.MODEL.epoch):
 
-def main():
-    args = load_args()
-
-    # load model
-    model_config, model_tokenizer = get_config_and_tokenizer()
-    model = load_model(args, model_config)
-    dev = set_gpu(args.devices, model)
-
-    # load optim 
-    optim = load_optim(model)
-    # load dataloader
-    data_loader = load_data()
-    # load loss function
-    loss_func = load_loss_func()
-
-
-    if args.type == 'train' and CONFIG.MODEL.model == 'BertForMaskedLM':
-        
-        for epoch in range(CONFIG.MODEL.epoch):
             model.train()
-            for data in data_loader:
+            for data in train_data_loader:
                 label = data[:]
                 data, mask_ids = random_mask(data)
+                
 
                 # print(data)
                 # print(label)
@@ -269,129 +269,139 @@ def main():
                 # TODO：there may be a problem in this loss, need to double check it. 
                 output.loss.backward()
                 optim.step()
-                print(output.loss)
+
+                
+            with open(CONFIG.LOG.log_path, 'a') as f:
+                f.write('================================epoch : {}=====================================\n'.format(epoch))
+                f.write('loss : {}\n'.format(output.loss.item()))
+                print('================================epoch : {}====================================='.format(epoch))
+                print('loss : {}\n'.format(output.loss.item()))
 
 
+            if epoch % CONFIG.EVAL.eval_interval == 0:
+                test(model, model_tokenizer=model_tokenizer, dev=dev, test_data_loader=test_data_loader)
 
 
-    elif args.type == 'train' and CONFIG.MODEL.model != 'BertForMaskedLM':
-        
-        for epoch in range(CONFIG.MODEL.epoch):
-            model.train()
-            for data in data_loader:
-                label = data[:]            # label remain the same as raw data
-                data,mask_ids  = random_mask(data)
+def test(model, model_tokenizer, dev, test_data_loader):
 
-                print(data)
-                print(label)
-                print(mask_ids)
-
-                inputs = model_tokenizer(data, return_tensors='pt', padding=True)
-                label_out = model_tokenizer(label, return_tensors='pt', padding=True)
-
-                # to dev
-                inputs_ids = inputs['input_ids'].to(dev)
-                label_out_ids = label_out['input_ids'].to(dev)
-
-                #forward
-                output = model(input_ids=inputs_ids)                
-                # TODO: implement loss calculation
-                loss = loss_func(output.transpose(1,2), label_out_ids)
-                #backward
-                optim.zero_grad()
-                # loss.backward()
-                optim.step()
-                break
+    model.eval()
+    loss_list = []
+    result = []
+    iou_list = []
+    overlap_list = []
+    alignment_list = []
+    alignment_list = []
+    i = 0
     
-    elif args.type == 'eval' and CONFIG.MODEL.model == 'BertForMaskedLM':
-        # TODO: 测试方法的生成是生成一个batch还是一个一个生成有待于double check
-        print('BertForMaskedLM')
-        model.eval()
-        loss_list = []
-        result = []
+    for data in test_data_loader:
+        i = i + 1
+        label = data[:]
+        data = mask_cor_and_size(data)
+
+        inputs = model_tokenizer(data, return_tensors='pt', padding=True)
+        label_out = model_tokenizer(label, return_tensors='pt', padding=True)
+
+        input_ids = inputs['input_ids'].to(dev)
+        attention_mask = inputs['attention_mask'].to(dev)
+        token_type_ids = inputs['token_type_ids'].to(dev)
+        labels = label_out['input_ids'].to(dev)
+
+        ele_num = int(((input_ids.shape[1]) - 2) / 5)                      # minus two for <bos> and <eos>
+
+        groups = [[0, 1, 2], [0, 3, 4]]                                      # don't mask class and size parameter
+
+
+        # TODO: 先完成非iterative 再加上iterative                    
+        # generate cor and size
+        # for group in groups:
+        #     type_not_mask = [int(i * 5 + j + 1) for i in range(int(ele_num)) for j in group]
+        #     type_not_mask.append(0)                                             # don't mask <bos>
+        #     type_not_mask.append((ele_num * 5 + 1))                             # don't mask <eos>
+        #     #generate size
+        #     for t in range(1, int(CONFIG.EVAL.gen_t / 2)  + 1):             # t from range  1 ->  T/2       
+        #         output = model(input_ids, attention_mask, token_type_ids)
+        #         gamma = (CONFIG.EVAL.gen_t - 2 * t) / CONFIG.EVAL.gen_t
+        #         mask_num = math.ceil(gamma * ele_num * 2)
+                
+        #         logit, pred = torch.max(output.logits, dim=2)        
+                
+        #         logit[:, type_not_mask] = float(sys.maxsize) 
+        #         mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
+            
+        #         pred_recovered = recover_class_by_label(pred, labels)
+        #         pred_mask = mask_by_mask_ids(pred_recovered, mask_ids)
+
+        #         # print("mask_num : {}".format(mask_num))
+        #         # print("input_ids shape : {}".format(input_ids.shape))
+        #         # print("input_ids is : {}".format(input_ids))
+        #         # print("pred_mask shape :{}".format(pred_mask.shape))
+        #         # print("pred_mask is : {}".format(pred_mask))
+
+        #         input_ids = pred_mask
+        output = model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, labels=labels)
+        loss_list.append(output.loss.data.item())
+
+        logit, pred = torch.max(output.logits, dim=2)
+        pred = truncate_by_label(pred, label)
+        seq = model_tokenizer.batch_decode(pred)
+        result_batch = seq_to_num(seq)
+        result = result + result_batch
+
+        # print(pred)
+        # print(result)
+        print(len(result))
+
+        batch_iou = cal_IoU(result_batch)
+        batch_overlap = cal_overlap(result_batch)
+        batch_alignment = cal_alignment(result_batch)
+
+        # print("batch_iot : {}".format(batch_iou))
+        # print("batch_overlap : {}".format(batch_overlap))
+        # print("batch_alignment : {}".format(batch_alignment))
+
+        iou_list.append(batch_iou)
+        overlap_list.append(batch_iou)
+        alignment_list.append(batch_alignment)
         
-        for data in data_loader:
-            label = data[:]
-            data = mask_cor_and_size(data)
+        if i == 2:
+            print('result : {}'.format(result))
+            break
+        
+    with open(CONFIG.LOG.log_path, 'a') as f:
+        f.write('iou : {}\n'.format(np.array(iou_list).mean()))
+        f.write('alignment : {}\n'.format(np.array(alignment_list).mean()))
+        f.write('overlap : {}\n'.format(np.array(overlap_list).mean()))
+        f.write('eval loss : {}\n'.format(np.array(loss_list).mean()))
+        print('eval loss : {}'.format(np.array(loss_list).mean()))
+        print('alignment : {}'.format(np.array(alignment_list).mean()))
+        print('overlap : {}'.format(np.array(overlap_list).mean()))
+        print('iou : {}'.format(np.array(iou_list).mean()))
 
-            inputs = model_tokenizer(data, return_tensors='pt', padding=True)
-            label_out = model_tokenizer(label, return_tensors='pt', padding=True)
+    
+def main():
+    args = load_args()
 
-            input_ids = inputs['input_ids'].to(dev)
-            attention_mask = inputs['attention_mask'].to(dev)
-            token_type_ids = inputs['token_type_ids'].to(dev)
-            labels = label_out['input_ids'].to(dev)
+    # load model
+    model_config, model_tokenizer = get_config_and_tokenizer()
+    model = load_model(args, model_config)
+    dev = set_gpu(args.devices, model)
 
-            ele_num = int(((input_ids.shape[1]) - 2) / 5)                      # minus two for <bos> and <eos>
-            cardinal_for_size = cardinal_for_cor  = ele_num * 2
-
-            groups = [[0, 1, 2], [0, 3, 4]]                                      # don't mask class and size parameter
-                                         
-            
-            for group in groups:
-                type_not_mask = [int(i * 5 + j + 1) for i in range(int(ele_num)) for j in group]
-                type_not_mask.append(0)                                             # don't mask <bos>
-                type_not_mask.append((ele_num * 5 + 1))                             # don't mask <eos>
-                #generate size
-                for t in range(1, int(CONFIG.EVAL.gen_t / 2)  + 1):             # t from range  1 ->  T/2       
-                    output = model(input_ids, attention_mask, token_type_ids)
-                    gamma = (CONFIG.EVAL.gen_t - 2 * t) / CONFIG.EVAL.gen_t
-                    mask_num = math.ceil(gamma * cardinal_for_size)
-                    
-                    logit, pred = torch.max(output.logits, dim=2)        
-                    
-                    logit[:, type_not_mask] = float(sys.maxsize) 
-                    mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
-                    
-                    # id to seq
-                    # print("pred : {}".format(pred))
-                    pred_recovered = recover_class_by_label(pred, labels)
-                    pred_mask = mask_by_mask_ids(pred_recovered, mask_ids)
-                    print("mask_num : {}".format(mask_num))
-                    print("input_ids shape : {}".format(input_ids.shape))
-                    print("input_ids is : {}".format(input_ids))
-                    print("pred_mask shape :{}".format(pred_mask.shape))
-                    print("pred_mask is : {}".format(pred_mask))
-            
-            print(pred.shape)
+    # load optim 
+    optim = load_optim(model)
+    # load dataloader
 
 
-    elif args.type == 'eval':
-        # TODO: 写测试方法, 记得把数据集划分为测试集和训练集
-        print('eval')
-        model.eval()
-        for data in data_loader:
-            # process data
-            label = data[:]
-            data = mask_cor_and_size(data)
-            
-            inputs = model_tokenizer(data, return_tensors='pt', padding=True)
-            label_out = model_tokenizer(label, return_tensors='pt', padding=True)
+    if args.type == 'train' and CONFIG.MODEL.model == 'BertForMaskedLM':
 
-            # to dev
-            inputs_ids = inputs['input_ids'].to(dev)
-            label_out_ids = label_out['input_ids'].to(dev)
-
-
-            for input_ids in inputs_ids:                        # 将batch_size 中的每一个batch分开处理，要不长度不统一会出问题
-                input_ids = input_ids.unsqueeze(0)
-                print(input_ids.shape)
-                ele_num = len(input_ids) / 5
-
-                # generation for size
-                for t in range(int(CONFIG.EVAL.gen_t / 2)):
-                    output = model(input_ids)
-                    print(output.shape)
-                    gamma = (CONFIG.EVAL.gen_t - 3 * t) / CONFIG.EVAL.gen_t
-                    mask_num = math.ceil(gamma * (ele_num * 2))
-                    print(mask_num)
-                    
-                    mmax, pred = torch.max(output[:, 1:-1, :], dim=2)        # ignore <bos> and <eos>
-                    mask_ids = torch.argsort(mmax, dim=1)[:mask_num]
-                    nxt_setence = num_to_word(pred)
-                    print(nxt_setence)
-
-                    return 
+        train_data_loader = load_data(CONFIG.DATA.train_data_path)
+        val_data_loader = load_data(CONFIG.DATA.val_data_path)
+        train(model, model_tokenizer=model_tokenizer, 
+            dev=dev, optim=optim, train_data_loader=train_data_loader, test_data_loader=val_data_loader)
+                
+    elif args.type == 'eval' and CONFIG.MODEL.model == 'BertForMaskedLM':
+        
+        test_data_loader = load_data(CONFIG.DATA.test_data_path)
+        test(model, model_tokenizer, dev, test_data_loader=test_data_loader)
 
             
 if __name__ == '__main__':

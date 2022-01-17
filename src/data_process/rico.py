@@ -1,8 +1,10 @@
 import json
 import glob
-from tqdm import tqdm
 import pickle
 import os
+import random
+import numpy
+from tqdm import tqdm
 
 MAX_CLASS_NUM = 25
 MAX_ELE_NUM = 20
@@ -99,8 +101,7 @@ def filter_same_overlap_ele(layout):
 
 
 if __name__ == "__main__":
-    # flist = glob.glob(rf'../../../data/RICO/semantic_annotations/*.json')
-    flist = glob.glob(rf'../../../data/RICO/semantic_annotations/*.json')
+    flist = glob.glob(rf'../../../Dataset/RICO/semantic_annotations/*.json')
     flist.sort(key=lambda x: int(x.split(os.sep)[-1][:-5]))
     flist = flist
 
@@ -109,6 +110,9 @@ if __name__ == "__main__":
         'On/Off Switch', 'Slider', 'Map View', 'Button Bar', 'Video', 'Bottom Navigation', 'Number Stepper', 'Date Picker']
 
     rico_dataset = []
+    rico_train_dataset = []
+    rico_test_dataset = []
+    rico_val_dataset = []
 
 
     for f in tqdm(flist):
@@ -144,10 +148,41 @@ if __name__ == "__main__":
 
         rico_dataset.append(l)
 
-    print(len(rico_dataset)) 
+        type_prob = random.random()
+        if type_prob < 0.85:
+            rico_train_dataset.append(l)
+        elif type_prob < 0.95 and type_prob >= 0.85:
+            rico_test_dataset.append(l)
+        elif type_prob >= 0.95:
+            rico_val_dataset.append(l)
 
-    with open('../dataset/RICO.pkl','wb')as f:
-        pickle.dump(rico_dataset,f)
+    
+    # tot = [i for i in range(len(rico_dataset))]
+    # train_sample = int(len(rico_dataset) * 0.85) 
+    # train_ids = random.sample(tot, train_sample)
+    # test_and_val_ids = list(set(tot).difference(set(train_ids)))    # calculate the test and validation idx
+    # test_sample = int(len(rico_dataset) * 0.1) 
+    # test_ids = random.sample(test_and_val_ids, test_sample)
+    # val_ids = list(set(test_and_val_ids).difference(set(test_ids)))
+
+    # rico_train_dataset = rico_dataset[train_ids]
+    # rico_test_dataset = rico_dataset[test_ids]
+    # rico_val_dataset = rico_dataset[val_ids]
+
+
+    print(len(rico_dataset)) 
+    print(len(rico_train_dataset))
+    print(len(rico_test_dataset))
+    print(len(rico_val_dataset))
+
+    with open('./dataset/RICO.pkl', 'wb') as f:
+        pickle.dump(rico_dataset, f)
+    with open('./dataset/RICO_train.pkl', 'wb') as f:
+        pickle.dump(rico_train_dataset, f)
+    with open('./dataset/RICO_test.pkl', 'wb') as f:
+        pickle.dump(rico_test_dataset, f)
+    with open('./dataset/RICO_val.pkl', 'wb') as f:
+        pickle.dump(rico_val_dataset, f)
     # with open('./dataset/RICO.json','w')as f:
     #     json.dump(rico_dataset,f)
 

@@ -53,8 +53,8 @@ from transformers import BertModel, BertConfig, BertTokenizer, BertForMaskedLM
 from transformers import BertTokenizer, BertForMaskedLM, T5Tokenizer
 import torch
 
-tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-model = BertForMaskedLM.from_pretrained("bert-base-uncased")
+# tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+# model = BertForMaskedLM.from_pretrained("bert-base-uncased")
 # tokenizer = T5Tokenizer.from_pretrained('t5-base')
 
 # seq = 'oh my god'
@@ -87,14 +87,13 @@ import sys
 #         [1021, 1014, 1014, 1014, 1021, 1021, 1015, 1012,  103, 1012]])
 # b = tokenizer.batch_decode(a)
 
-a = ['I am a big big pig', 'I am a big big big pig pig pig pig pig']
-b = tokenizer(a)
-print(b)
+# a = ['I am a big big pig', 'I am a big big big , pig pig pig pig pig']
+# b = tokenizer(a)
+# seq = tokenizer.batch_decode(b.input_ids)
+# print(b)
+# print(seq)
 
-print(b)
-for seq in b:
-    tokens = seq.split()
-    print(len(tokens))
+
 
 
 
