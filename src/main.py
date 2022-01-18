@@ -1,4 +1,5 @@
 from ast import arg
+from functools import total_ordering
 from lib2to3.pgen2 import token
 from lib2to3.pgen2.tokenize import tokenize
 from math import gamma
@@ -7,17 +8,22 @@ import os
 from statistics import mode
 import sys
 import argparse
+from numpy import iterable
 import path
-import tqdm
 import random
 import math
 import torch
 import torch.nn as nn
 import datetime
+import json
+
+
+from tensorboardX import SummaryWriter
 from transformers.models.bert import modeling_bert
 from transformers import T5ForConditionalGeneration, T5Model, T5Tokenizer, T5Config, AdamW
 from transformers import BertModel, BertTokenizer, BertConfig, BertForMaskedLM
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 
 sys.path.append(path.Path(__file__).abspath().parent.parent)
@@ -34,6 +40,8 @@ def load_args():
     parser.add_argument("--type", type=str, choices=['train', 'eval'], help="mode, train or eval", default='train')
     parser.add_argument("--devices", type=str, help="gpu to use", default="")
     parser.add_argument("--weight", default=False, action='store_true')
+    parser.add_argument("--debug", default=False, action='store_true')
+    parser.add_argument("--weight_path", default="")
     args = parser.parse_args()
     return args
 
@@ -46,20 +54,22 @@ def set_gpu(devices:str, model):
         print('[using cpu]')
         model.to('cpu')
         dev = 'cpu'
-        return
+        return model, dev
 
     #gpu
     devices_list = devices.split(",")
     if len(devices_list) != 0:
-        gpus = [int(gpu_str) for gpu_str in devices_list]
+        gpus = [int(i) for i in range(len(devices_list))]
         print('[using gpu]')
         dev = 'cuda:0'
         model.to('cuda')
 
+    
     if len(gpus) > 0 and torch.cuda.device_count() > 1:
+        print('[user gpu]: {}'.format(devices))
         model=nn.DataParallel(model, device_ids=gpus)
 
-    return dev
+    return model, dev
 
 
 def load_model(args, model_config):
@@ -86,10 +96,10 @@ def load_optim(model):
     return optim
 
 
-def load_data(data_path):
-    data_loader =  DataLoader(ricoDataset.RicoDataset(data_path),
+def load_data(data_path, args):
+    data_loader =  DataLoader(ricoDataset.RicoDataset(data_path, args.debug),
                             batch_size=CONFIG.DATA.batch_size,
-                            shuffle=False,
+                            shuffle=True,
                             num_workers=CONFIG.DATA.num_workers)
 
     return data_loader
@@ -221,70 +231,104 @@ def truncate_by_label(preds, labels):
         result.append(pred[1:len(tokens_label)+1].tolist())
     return result
 
-def seq_to_num(seqs):
+def seq_to_num_and_store(seqs, labels):
     result = []
-    for seq in seqs:
-        result_temp = []
+    origin = []
+    for seq, labels in zip(seqs, labels):
+        result_layout = []
+        origin_layout = []
         tokens = seq.split()
+        origin_tokens = labels.split()
         if len(tokens) % 5 != 0:                     # 如果出现了像'.'这样的东西导致长度缩短，那么整个layout直接不要
             continue
         ele_num = int(len(tokens) / 5)
         for i in range(ele_num):
-            result_ele = []
+            result_box = []
+            origin_box = []
             for j in range(5):
-                if not tokens[i * 5 + j].isdigit():
+                if not tokens[i * 5 + j].isdigit() or int(tokens[i * 5 + j]) < 0:
                     break
-                result_ele.append(int(tokens[i * 5 + j]))
-            if len(result_ele) == 5:
-                result_temp.append(result_ele)
-        result.append(result_temp)
-    return result
+                result_box.append(int(tokens[i * 5 + j]))
+                origin_box.append(int(origin_tokens[i * 5 + j]))
+            if len(result_box) == 5:
+                result_layout.append(result_box)
+                origin_layout.append(origin_box)
+        if len(result_layout) > 0:
+            result.append(result_layout)
+            origin.append(origin_layout)
+
+    json_dict = {}
+    json_dict['origin'] = origin
+    json_dict['generation'] = result
+
+    if not os.path.exists(CONFIG.LOG.output_dir):
+        os.makedirs(CONFIG.LOG.output_dir)
+
+    with open(os.path.join(CONFIG.LOG.output_dir, TIME_PREFIX + '.json'), 'w') as fp:
+        json.dump(json_dict, fp)
+        
+    return result, origin
     
         
-def train(model, model_tokenizer, dev, optim, train_data_loader, test_data_loader):
+def train(model, model_tokenizer, dev, optim, train_data_loader, test_data_loader, writer):
 
-    for epoch in range(CONFIG.MODEL.epoch):
-        model.train()
-        for data in train_data_loader:
-            label = data[:]
-            data, mask_ids = random_mask(data)
+    for epoch in range(CONFIG.MODEL.num_epoch):                
+        with tqdm(iterable=train_data_loader) as t:
+            start_time = datetime.datetime.now()
+            loss_list = []
+            model.train()
+            for data in train_data_loader:
+                t.set_description_str(f"\33[36m [Epoch {epoch + 1:04d}]")
+                label = data[:]
+                data, mask_ids = random_mask(data)
+                
+                # print(data)
+                # print(label)
+                # print(mask_ids)
+
+                inputs = model_tokenizer(data, return_tensors='pt', padding=True)
+                label_out = model_tokenizer(label, return_tensors='pt', padding=True)
+                # to dev
+                input_ids = inputs['input_ids'].to(dev)
+                attention_mask = inputs['attention_mask'].to(dev)
+                token_type_ids = inputs['token_type_ids'].to(dev)
+                labels = label_out['input_ids'].to(dev)
+
+                
+                output = model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, labels=labels)
+
+                optim.zero_grad()
+                # TODO：there may be a problem in this loss, need to double check it. 
+                loss = output.loss.mean()
+                loss.backward()
+                optim.step()
+
+                loss_list.append(loss.item())
+                cur_time = datetime.datetime.now()
+                delta_time = cur_time - start_time
+
+                t.set_postfix_str(f"train_loss:{sum(loss_list) / len(loss_list):.6f}, time:{delta_time}\33[0m")
+                t.update()
+
+            if not os.path.exists(CONFIG.LOG.log_dir):
+                os.makedirs(CONFIG.LOG.log_dir)
+            with open(os.path.join(CONFIG.LOG.log_dir, TIME_PREFIX + '.log'), 'a') as f:
+                f.write('epoch {}, train loss : {}\n'.format(epoch, loss.item()))
+                print('epoch {}, train loss : {}'.format(epoch, loss.item()))
+                
+            if epoch % CONFIG.EVAL.eval_interval == 0:
+                test(model, model_tokenizer=model_tokenizer, dev=dev, test_data_loader=test_data_loader, writer=writer, epoch=epoch)
+            if epoch % CONFIG.EVAL.save_interval == 0:
+                if not os.path.exists(CONFIG.MODEL.checkpoint_dir):
+                    os.makedirs(CONFIG.MODEL.checkpoint_dir)
+                torch.save(model.state_dict(), os.path.join(CONFIG.MODEL.checkpoint_dir, TIME_PREFIX+'.pt'))
+
+            writer.add_scalar('train loss', sum(loss_list)/len(loss_list), epoch)
             
-            # print(data)
-            # print(label)
-            # print(mask_ids)
-
-            inputs = model_tokenizer(data, return_tensors='pt', padding=True)
-            label_out = model_tokenizer(label, return_tensors='pt', padding=True)
-            # to dev
-            input_ids = inputs['input_ids'].to(dev)
-            attention_mask = inputs['attention_mask'].to(dev)
-            token_type_ids = inputs['token_type_ids'].to(dev)
-            labels = label_out['input_ids'].to(dev)
-
-            
-            output = model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, labels=labels)
-
-            optim.zero_grad()
-            # TODO：there may be a problem in this loss, need to double check it. 
-            output.loss.backward()
-            optim.step()
-
-            
-        with open(CONFIG.LOG.log_path, 'a') as f:
-            f.write('================================epoch : {}=====================================\n'.format(epoch))
-            f.write('loss : {}\n'.format(output.loss.item()))
-            print('================================epoch : {}====================================='.format(epoch))
-            print('loss : {}\n'.format(output.loss.item()))
-            
-        if epoch % CONFIG.EVAL.eval_interval == 0:
-            test(model, model_tokenizer=model_tokenizer, dev=dev, test_data_loader=test_data_loader)
+            t.update()
         
-        if epoch % CONFIG.EVAL.save_interval == 0:
-            torch.save(model.state_dict(), CONFIG.MODEL.checkpoint_path)
-            
 
-
-def test(model, model_tokenizer, dev, test_data_loader):
+def test(model, model_tokenizer, dev, test_data_loader, writer, epoch=0):
 
     model.eval()
     loss_list = []
@@ -293,122 +337,139 @@ def test(model, model_tokenizer, dev, test_data_loader):
     overlap_list = []
     alignment_list = []
     alignment_list = []
-    i = 0
     
-    for data in test_data_loader:
-        i = i + 1
-        label = data[:]
-        data = mask_cor_and_size(data)
+    with tqdm(iterable=test_data_loader) as t:
+        for data in test_data_loader:
+            t.set_description_str(f"[Eval]")
+            label = data[:]
+            data = mask_cor_and_size(data)
 
-        inputs = model_tokenizer(data, return_tensors='pt', padding=True)
-        label_out = model_tokenizer(label, return_tensors='pt', padding=True)
+            inputs = model_tokenizer(data, return_tensors='pt', padding=True)
+            label_out = model_tokenizer(label, return_tensors='pt', padding=True)
 
-        input_ids = inputs['input_ids'].to(dev)
-        attention_mask = inputs['attention_mask'].to(dev)
-        token_type_ids = inputs['token_type_ids'].to(dev)
-        labels = label_out['input_ids'].to(dev)
+            input_ids = inputs['input_ids'].to(dev)
+            attention_mask = inputs['attention_mask'].to(dev)
+            token_type_ids = inputs['token_type_ids'].to(dev)
+            labels = label_out['input_ids'].to(dev)
 
-        ele_num = int(((input_ids.shape[1]) - 2) / 5)                      # minus two for <bos> and <eos>
+            # ele_num = int(((input_ids.shape[1]) - 2) / 5)                      # minus two for <bos> and <eos>
 
-        groups = [[0, 1, 2], [0, 3, 4]]                                      # don't mask class and size parameter
+            # groups = [[0, 1, 2], [0, 3, 4]]                                      # don't mask class and size parameter
 
 
-        # TODO: 先完成非iterative 再加上iterative                    
-        # generate cor and size
-        # for group in groups:
-        #     type_not_mask = [int(i * 5 + j + 1) for i in range(int(ele_num)) for j in group]
-        #     type_not_mask.append(0)                                             # don't mask <bos>
-        #     type_not_mask.append((ele_num * 5 + 1))                             # don't mask <eos>
-        #     #generate size
-        #     for t in range(1, int(CONFIG.EVAL.gen_t / 2)  + 1):             # t from range  1 ->  T/2       
-        #         output = model(input_ids, attention_mask, token_type_ids)
-        #         gamma = (CONFIG.EVAL.gen_t - 2 * t) / CONFIG.EVAL.gen_t
-        #         mask_num = math.ceil(gamma * ele_num * 2)
+            # TODO: 先完成非iterative 再加上iterative                    
+            # generate cor and size
+            # for group in groups:
+            #     type_not_mask = [int(i * 5 + j + 1) for i in range(int(ele_num)) for j in group]
+            #     type_not_mask.append(0)                                             # don't mask <bos>
+            #     type_not_mask.append((ele_num * 5 + 1))                             # don't mask <eos>
+            #     #generate size
+            #     for t in range(1, int(CONFIG.EVAL.gen_t / 2)  + 1):             # t from range  1 ->  T/2       
+            #         output = model(input_ids, attention_mask, token_type_ids)
+            #         gamma = (CONFIG.EVAL.gen_t - 2 * t) / CONFIG.EVAL.gen_t
+            #         mask_num = math.ceil(gamma * ele_num * 2)
+                    
+            #         logit, pred = torch.max(output.logits, dim=2)        
+                    
+            #         logit[:, type_not_mask] = float(sys.maxsize) 
+            #         mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
                 
-        #         logit, pred = torch.max(output.logits, dim=2)        
-                
-        #         logit[:, type_not_mask] = float(sys.maxsize) 
-        #         mask_ids = torch.argsort(logit, dim=1)[:, :mask_num]           # which token to re-masked, coordinate group
+            #         pred_recovered = recover_class_by_label(pred, labels)
+            #         pred_mask = mask_by_mask_ids(pred_recovered, mask_ids)
+
+            #         # print("mask_num : {}".format(mask_num))
+            #         # print("input_ids shape : {}".format(input_ids.shape))
+            #         # print("input_ids is : {}".format(input_ids))
+            #         # print("pred_mask shape :{}".format(pred_mask.shape))
+            #         # print("pred_mask is : {}".format(pred_mask))
+
+            #         input_ids = pred_mask
+            with torch.no_grad():
+                output = model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, labels=labels)
             
-        #         pred_recovered = recover_class_by_label(pred, labels)
-        #         pred_mask = mask_by_mask_ids(pred_recovered, mask_ids)
+            loss = output.loss.mean()
+            loss_list.append(loss.item())
 
-        #         # print("mask_num : {}".format(mask_num))
-        #         # print("input_ids shape : {}".format(input_ids.shape))
-        #         # print("input_ids is : {}".format(input_ids))
-        #         # print("pred_mask shape :{}".format(pred_mask.shape))
-        #         # print("pred_mask is : {}".format(pred_mask))
+            logit, pred = torch.max(output.logits, dim=2)
+            pred = truncate_by_label(pred, label)
+            seq = model_tokenizer.batch_decode(pred)
+            result_batch, origin_batch = seq_to_num_and_store(seq, label)
+            result = result + result_batch
 
-        #         input_ids = pred_mask
-        output = model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, labels=labels)
-        loss_list.append(output.loss.data.item())
+            # print(pred)
+            # print(result)
 
-        logit, pred = torch.max(output.logits, dim=2)
-        pred = truncate_by_label(pred, label)
-        seq = model_tokenizer.batch_decode(pred)
-        result_batch = seq_to_num(seq)
-        result = result + result_batch
+            batch_iou = cal_IoU(result_batch)
+            batch_overlap = cal_overlap(result_batch)
+            batch_alignment = cal_alignment(result_batch)
 
-        # print(pred)
-        # print(result)
-        print(len(result))
+            # print("batch_iot : {}".format(batch_iou))
+            # print("batch_overlap : {}".format(batch_overlap))
+            # print("batch_alignment : {}".format(batch_alignment))
 
-        batch_iou = cal_IoU(result_batch)
-        batch_overlap = cal_overlap(result_batch)
-        batch_alignment = cal_alignment(result_batch)
+            iou_list.append(batch_iou)
+            overlap_list.append(batch_overlap)
+            alignment_list.append(batch_alignment)
 
-        # print("batch_iot : {}".format(batch_iou))
-        # print("batch_overlap : {}".format(batch_overlap))
-        # print("batch_alignment : {}".format(batch_alignment))
-
-        iou_list.append(batch_iou)
-        overlap_list.append(batch_overlap)
-        alignment_list.append(batch_alignment)
+            t.set_postfix_str(f"eval_loss:{sum(loss_list) / len(loss_list):.6f}")
+            t.update()
         
-        if i == 2:
-            print('result : {}'.format(result))
-            break
-        
-    with open(CONFIG.LOG.log_path, 'a') as f:
-        f.write('iou : {}\n'.format(np.array(iou_list).mean()))
-        f.write('alignment : {}\n'.format(np.array(alignment_list).mean()))
-        f.write('overlap : {}\n'.format(np.array(overlap_list).mean()))
-        f.write('eval loss : {}\n'.format(np.array(loss_list).mean()))
-        print('eval loss : {}'.format(np.array(loss_list).mean()))
-        print('alignment : {}'.format(np.array(alignment_list).mean()))
-        print('overlap : {}'.format(np.array(overlap_list).mean()))
-        print('iou : {}'.format(np.array(iou_list).mean()))
+    if not os.path.exists(CONFIG.LOG.log_dir):
+        os.makedirs(CONFIG.LOG.log_dir)   
+    with open(os.path.join(CONFIG.LOG.log_dir, TIME_PREFIX + '.log'), 'a') as f:
+        f.write('iou : {}\n'.format(sum(iou_list) / len(iou_list)))
+        f.write('alignment : {}\n'.format(sum(alignment_list) / len(alignment_list)))
+        f.write('overlap : {}\n'.format(sum(overlap_list) / len(overlap_list)))
+        f.write('eval loss : {}\n'.format(sum(loss_list) / len(loss_list)))
+        print('eval loss : {}'.format(sum(loss_list) / len(loss_list)))
+        print('alignment : {}'.format(sum(alignment_list) / len(alignment_list)))
+        print('overlap : {}'.format(sum(overlap_list) / len(overlap_list)))
+        print('iou : {}'.format(sum(iou_list) / len(iou_list)))
+
+    writer.add_scalar('eval loss', sum(loss_list)/len(loss_list), epoch)
+    writer.add_scalar('overlap', sum(overlap_list) / len(overlap_list), epoch)
+    writer.add_scalar('alignment', sum(alignment_list)/len(alignment_list), epoch)
+    writer.add_scalar('iou', sum(iou_list) / len(iou_list), epoch)
+
+    t.update()
 
     
 def main():
     args = load_args()
 
+    # tensorboardX
+    if not args.debug:
+        writer = SummaryWriter(os.path.join(CONFIG.LOG.tensorboard_dir, TIME_PREFIX + '.log'))
     # load model
     model_config, model_tokenizer = get_config_and_tokenizer()
     model = load_model(args, model_config)
-
+    # load dev
+    model, dev = set_gpu(args.devices, model)
+    # load weight
     if args.weight == True or args.type == 'eval':
-        model.load_state_dict(CONFIG.MODEL.checkpoint_path)
-    dev = set_gpu(args.devices, model)
+        print('load weight from {}'.format(args.weight_path))
+        model.load_state_dict(torch.load(args.weight_path))
 
     # load optim 
     optim = load_optim(model)
-    # load dataloader
 
+    
+    # trian or eval
     if args.type == 'train' and CONFIG.MODEL.model == 'BertForMaskedLM':
 
-        train_data_loader = load_data(CONFIG.DATA.train_data_path)
-        val_data_loader = load_data(CONFIG.DATA.val_data_path)
+        train_data_loader = load_data(CONFIG.DATA.train_data_path, args)
+        val_data_loader = load_data(CONFIG.DATA.val_data_path, args)
         train(model, model_tokenizer=model_tokenizer, 
-            dev=dev, optim=optim, train_data_loader=train_data_loader, test_data_loader=val_data_loader)
+            dev=dev, optim=optim, train_data_loader=train_data_loader, test_data_loader=val_data_loader, writer = writer)
                 
     elif args.type == 'eval' and CONFIG.MODEL.model == 'BertForMaskedLM':
         
-        test_data_loader = load_data(CONFIG.DATA.test_data_path)
+        test_data_loader = load_data(CONFIG.DATA.test_data_path, args)
         test(model, model_tokenizer, dev, test_data_loader=test_data_loader)
 
             
 if __name__ == '__main__':
+    TIME_PREFIX = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M")
     main()
     
 

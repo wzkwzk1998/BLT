@@ -23,7 +23,6 @@ class RicoDataset(Dataset):
         max_len = -1
 
         ''' load data from file'''
-        data_tot = []
         with open(self.data_path, 'rb+') as f:
             # data_temp = pickle.load(f)
             # max_len = -1
@@ -55,6 +54,9 @@ class RicoDataset(Dataset):
                                     str(math.ceil((layout['box'][i][2]-  layout['box'][i][0]) * 127)) + ' ' + \
                                     str(math.ceil((layout['box'][i][3]-  layout['box'][i][1]) * 127))
                 self.data.append(batch_data.lstrip().rstrip())
+        
+        if debug:
+            self.data = self.data[:100]
         
 
     def __getitem__(self, index):

@@ -50,7 +50,7 @@ def alignment(boxes):
 
     '''
     input sample:
-        [[x1,y1,x2,y2],...]
+        [[class,x1,y1,x2,y2],...]
     '''
     align_error = 0.0
 
@@ -62,12 +62,12 @@ def alignment(boxes):
         for j in range(len(boxes)):
             if i == j:
                 continue
-            l.append(max(min(abs(boxes[i][0] - boxes[j][0]),1.0),0.0))
-            r.append(max(min(abs(boxes[i][2] - boxes[j][2]),1.0),0.0))
-            t.append(max(min(abs(boxes[i][1] - boxes[j][1]),1.0),0.0))
-            b.append(max(min(abs(boxes[i][3] - boxes[j][3]),1.0),0.0))
-            xc.append(max(min(abs((boxes[i][2]+boxes[i][0])/2.0-(boxes[j][2]+boxes[j][0])/2.0),1.0),0.0))
-            yc.append(max(min(abs((boxes[i][3]+boxes[i][1])/2.0-(boxes[j][3]+boxes[j][1])/2.0),1.0),0.0))
+            l.append(max(min(abs(boxes[i][1] - boxes[j][1]),1.0),0.0))
+            r.append(max(min(abs((boxes[i][1] + boxes[i][3]) - (boxes[j][1] + boxes[j][3])),1.0),0.0))
+            t.append(max(min(abs(boxes[i][2] - boxes[j][2]),1.0),0.0))
+            b.append(max(min(abs((boxes[i][2] + boxes[i][4]) - (boxes[j][2] + boxes[j][4])),1.0),0.0))
+            xc.append(max(min(abs((boxes[i][3] + 2 * boxes[i][1])/2.0-(boxes[j][3]+ 2 * boxes[j][1])/2.0),1.0),0.0))
+            yc.append(max(min(abs((boxes[i][4] + 2 *boxes[i][2])/2.0-(boxes[j][4] + 2 * boxes[j][2])/2.0),1.0),0.0))
         
         l,xc,r,t,yc,b = -np.log(1-min(l)), -np.log(1-min(xc)), -np.log(1-min(r)), -np.log(1-min(t)), -np.log(1-min(yc)), -np.log(1-min(b))
         align_error += min(l,xc,r,t,yc,b)
@@ -77,12 +77,12 @@ def alignment(boxes):
 def overlap(boxes):
     '''
     input sample:
-        [[x1,y1,x2,y2],...]
+        [[class,x1,y1,x2,y2],...]
     '''
     overlapping = 0.0
 
     for i in range(len(boxes)):
-        x1 = min(boxes[i][0],boxes[i][2]) 
+        x1 = min(boxes[i][1],boxes[i][2]) 
         x2 = max(boxes[i][0],boxes[i][2]) 
         y1 = min(boxes[i][1],boxes[i][3]) 
         y2 = max(boxes[i][1],boxes[i][3])

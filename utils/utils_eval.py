@@ -47,6 +47,7 @@ def cal_alignment(output):
     for l in output:
         boxes = l['pred_box']
         align_error += alignment(boxes)
+        print("align_error : {}".format(align_error))
     
     return align_error / len(output)
 
