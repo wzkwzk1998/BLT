@@ -33,6 +33,7 @@ def load_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", type=str, choices=['train', 'eval'], help="mode, train or eval", default='train')
     parser.add_argument("--devices", type=str, help="gpu to use", default="")
+    parser.add_argument("--weight", default=False, action='store_true')
     args = parser.parse_args()
     return args
 
@@ -243,43 +244,44 @@ def seq_to_num(seqs):
 def train(model, model_tokenizer, dev, optim, train_data_loader, test_data_loader):
 
     for epoch in range(CONFIG.MODEL.epoch):
+        model.train()
+        for data in train_data_loader:
+            label = data[:]
+            data, mask_ids = random_mask(data)
+            
+            # print(data)
+            # print(label)
+            # print(mask_ids)
 
-            model.train()
-            for data in train_data_loader:
-                label = data[:]
-                data, mask_ids = random_mask(data)
-                
+            inputs = model_tokenizer(data, return_tensors='pt', padding=True)
+            label_out = model_tokenizer(label, return_tensors='pt', padding=True)
+            # to dev
+            input_ids = inputs['input_ids'].to(dev)
+            attention_mask = inputs['attention_mask'].to(dev)
+            token_type_ids = inputs['token_type_ids'].to(dev)
+            labels = label_out['input_ids'].to(dev)
 
-                # print(data)
-                # print(label)
-                # print(mask_ids)
+            
+            output = model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, labels=labels)
 
-                inputs = model_tokenizer(data, return_tensors='pt', padding=True)
-                label_out = model_tokenizer(label, return_tensors='pt', padding=True)
-                # to dev
-                input_ids = inputs['input_ids'].to(dev)
-                attention_mask = inputs['attention_mask'].to(dev)
-                token_type_ids = inputs['token_type_ids'].to(dev)
-                labels = label_out['input_ids'].to(dev)
+            optim.zero_grad()
+            # TODO：there may be a problem in this loss, need to double check it. 
+            output.loss.backward()
+            optim.step()
 
-                
-                output = model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, labels=labels)
-
-                optim.zero_grad()
-                # TODO：there may be a problem in this loss, need to double check it. 
-                output.loss.backward()
-                optim.step()
-
-                
-            with open(CONFIG.LOG.log_path, 'a') as f:
-                f.write('================================epoch : {}=====================================\n'.format(epoch))
-                f.write('loss : {}\n'.format(output.loss.item()))
-                print('================================epoch : {}====================================='.format(epoch))
-                print('loss : {}\n'.format(output.loss.item()))
-
-
-            if epoch % CONFIG.EVAL.eval_interval == 0:
-                test(model, model_tokenizer=model_tokenizer, dev=dev, test_data_loader=test_data_loader)
+            
+        with open(CONFIG.LOG.log_path, 'a') as f:
+            f.write('================================epoch : {}=====================================\n'.format(epoch))
+            f.write('loss : {}\n'.format(output.loss.item()))
+            print('================================epoch : {}====================================='.format(epoch))
+            print('loss : {}\n'.format(output.loss.item()))
+            
+        if epoch % CONFIG.EVAL.eval_interval == 0:
+            test(model, model_tokenizer=model_tokenizer, dev=dev, test_data_loader=test_data_loader)
+        
+        if epoch % CONFIG.EVAL.save_interval == 0:
+            torch.save(model.state_dict(), CONFIG.MODEL.checkpoint_path)
+            
 
 
 def test(model, model_tokenizer, dev, test_data_loader):
@@ -360,7 +362,7 @@ def test(model, model_tokenizer, dev, test_data_loader):
         # print("batch_alignment : {}".format(batch_alignment))
 
         iou_list.append(batch_iou)
-        overlap_list.append(batch_iou)
+        overlap_list.append(batch_overlap)
         alignment_list.append(batch_alignment)
         
         if i == 2:
@@ -384,12 +386,14 @@ def main():
     # load model
     model_config, model_tokenizer = get_config_and_tokenizer()
     model = load_model(args, model_config)
+
+    if args.weight == True or args.type == 'eval':
+        model.load_state_dict(CONFIG.MODEL.checkpoint_path)
     dev = set_gpu(args.devices, model)
 
     # load optim 
     optim = load_optim(model)
     # load dataloader
-
 
     if args.type == 'train' and CONFIG.MODEL.model == 'BertForMaskedLM':
 

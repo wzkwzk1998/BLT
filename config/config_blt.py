@@ -19,6 +19,7 @@ CONFIG.MODEL = EasyDict()
 CONFIG.MODEL.model = 'BertForMaskedLM'
 CONFIG.MODEL.epoch = 2
 CONFIG.MODEL.loss = 'CrossEntropy'
+CONFIG.MODEL.checkpoint_path = './checkpoint/blt_checkpoint.pt'
 
 # optim param
 CONFIG.OPTIM = EasyDict()
