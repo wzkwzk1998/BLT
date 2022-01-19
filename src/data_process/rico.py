@@ -175,13 +175,13 @@ if __name__ == "__main__":
     print(len(rico_test_dataset))
     print(len(rico_val_dataset))
 
-    with open('./dataset/RICO.pkl', 'wb') as f:
+    with open('./data/RICO.pkl', 'wb') as f:
         pickle.dump(rico_dataset, f)
-    with open('./dataset/RICO_train.pkl', 'wb') as f:
+    with open('./data/RICO_train.pkl', 'wb') as f:
         pickle.dump(rico_train_dataset, f)
-    with open('./dataset/RICO_test.pkl', 'wb') as f:
+    with open('./data/RICO_test.pkl', 'wb') as f:
         pickle.dump(rico_test_dataset, f)
-    with open('./dataset/RICO_val.pkl', 'wb') as f:
+    with open('./data/RICO_val.pkl', 'wb') as f:
         pickle.dump(rico_val_dataset, f)
     # with open('./dataset/RICO.json','w')as f:
     #     json.dump(rico_dataset,f)

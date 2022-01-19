@@ -39,7 +39,6 @@ def load_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", type=str, choices=['train', 'eval'], help="mode, train or eval", default='train')
     parser.add_argument("--devices", type=str, help="gpu to use", default="")
-    parser.add_argument("--weight", default=False, action='store_true')
     parser.add_argument("--debug", default=False, action='store_true')
     parser.add_argument("--weight_path", default="")
     args = parser.parse_args()
@@ -99,7 +98,7 @@ def load_optim(model):
 def load_data(data_path, args):
     data_loader =  DataLoader(ricoDataset.RicoDataset(data_path, args.debug),
                             batch_size=CONFIG.DATA.batch_size,
-                            shuffle=True,
+                            shuffle=False,
                             num_workers=CONFIG.DATA.num_workers)
 
     return data_loader
@@ -119,7 +118,7 @@ def mask_token(tokens, prob, idx, mask_idx_batch):
     '''
     mask a token
     '''
-    if prob < 0.15:
+    if prob < 0.2:
         if CONFIG.MODEL.model == 'BertForMaskedLM':
             tokens[idx] = '[MASK]'
         if CONFIG.MODEL.model == 'Bert':
@@ -169,6 +168,7 @@ def mask_cor_and_size(data):
     '''
     mask all coordinate and size parameter in a batch
     '''
+    result = []
     for idx,sentence in enumerate(data):
         tokens = sentence.split()
         assert(len(tokens) % 5 == 0)
@@ -176,7 +176,7 @@ def mask_cor_and_size(data):
         for i in range(ele_num):
             for j in range(1,5):
                 if CONFIG.MODEL.model == 'BertForMaskedLM':
-                    tokens[i * 5 + j] == '[MASK]'
+                    tokens[i * 5 + j] = '[MASK]'
                 elif CONFIG.MODEL.model == 'Bert':
                     tokens[i * 5 + j] = '[MASK]'
                 elif CONFIG.MODEL.model == 'T5':
@@ -185,9 +185,9 @@ def mask_cor_and_size(data):
                     raise Exception("unknow model")
             
         sentence_masked = ' '.join(tokens)
-        data[idx] = sentence_masked
+        result.append(sentence_masked)
     
-    return data
+    return result
         
 
 def num_to_word(pred):
@@ -227,6 +227,7 @@ def recover_class_by_label(preds, labels):
 def truncate_by_label(preds, labels):
     result = []
     for pred, label in zip(preds, labels):
+        # print('pred shape : {}'.format(pred.shape))
         tokens_label = label.split()
         result.append(pred[1:len(tokens_label)+1].tolist())
     return result
@@ -234,15 +235,17 @@ def truncate_by_label(preds, labels):
 def seq_to_num_and_store(seqs, labels):
     result = []
     origin = []
+    bad_layout = 0
     for seq, labels in zip(seqs, labels):
         result_layout = []
         origin_layout = []
         tokens = seq.split()
         origin_tokens = labels.split()
         if len(tokens) % 5 != 0:                     # 如果出现了像'.'这样的东西导致长度缩短，那么整个layout直接不要
+            bad_layout += 1
             continue
-        ele_num = int(len(tokens) / 5)
-        for i in range(ele_num):
+        box_num = int(len(tokens) / 5)
+        for i in range(box_num):
             result_box = []
             origin_box = []
             for j in range(5):
@@ -256,21 +259,11 @@ def seq_to_num_and_store(seqs, labels):
         if len(result_layout) > 0:
             result.append(result_layout)
             origin.append(origin_layout)
-
-    json_dict = {}
-    json_dict['origin'] = origin
-    json_dict['generation'] = result
-
-    if not os.path.exists(CONFIG.LOG.output_dir):
-        os.makedirs(CONFIG.LOG.output_dir)
-
-    with open(os.path.join(CONFIG.LOG.output_dir, TIME_PREFIX + '.json'), 'w') as fp:
-        json.dump(json_dict, fp)
         
     return result, origin
     
         
-def train(model, model_tokenizer, dev, optim, train_data_loader, test_data_loader, writer):
+def train(args, model, model_tokenizer, dev, optim, train_data_loader, test_data_loader, writer=None):
 
     for epoch in range(CONFIG.MODEL.num_epoch):                
         with tqdm(iterable=train_data_loader) as t:
@@ -313,29 +306,29 @@ def train(model, model_tokenizer, dev, optim, train_data_loader, test_data_loade
             if not os.path.exists(CONFIG.LOG.log_dir):
                 os.makedirs(CONFIG.LOG.log_dir)
             with open(os.path.join(CONFIG.LOG.log_dir, TIME_PREFIX + '.log'), 'a') as f:
-                f.write('epoch {}, train loss : {}\n'.format(epoch, loss.item()))
-                print('epoch {}, train loss : {}'.format(epoch, loss.item()))
+                f.write('epoch {}, train loss : {}\n'.format(epoch, sum(loss_list) / len(loss_list)))
                 
             if epoch % CONFIG.EVAL.eval_interval == 0:
-                test(model, model_tokenizer=model_tokenizer, dev=dev, test_data_loader=test_data_loader, writer=writer, epoch=epoch)
+                test(args, model, model_tokenizer=model_tokenizer, dev=dev, test_data_loader=test_data_loader, writer=writer, epoch=epoch)
             if epoch % CONFIG.EVAL.save_interval == 0:
                 if not os.path.exists(CONFIG.MODEL.checkpoint_dir):
                     os.makedirs(CONFIG.MODEL.checkpoint_dir)
                 torch.save(model.state_dict(), os.path.join(CONFIG.MODEL.checkpoint_dir, TIME_PREFIX+'.pt'))
 
-            writer.add_scalar('train loss', sum(loss_list)/len(loss_list), epoch)
+            if args.type == 'train' and not args.debug:
+                writer.add_scalar('train loss', sum(loss_list)/len(loss_list), epoch)
             
             t.update()
         
 
-def test(model, model_tokenizer, dev, test_data_loader, writer, epoch=0):
+def test(args, model, model_tokenizer, dev, test_data_loader, writer=None, epoch=0):
 
     model.eval()
     loss_list = []
     result = []
+    origin = []
     iou_list = []
     overlap_list = []
-    alignment_list = []
     alignment_list = []
     
     with tqdm(iterable=test_data_loader) as t:
@@ -395,6 +388,7 @@ def test(model, model_tokenizer, dev, test_data_loader, writer, epoch=0):
             seq = model_tokenizer.batch_decode(pred)
             result_batch, origin_batch = seq_to_num_and_store(seq, label)
             result = result + result_batch
+            origin = origin + origin_batch
 
             # print(pred)
             # print(result)
@@ -426,10 +420,22 @@ def test(model, model_tokenizer, dev, test_data_loader, writer, epoch=0):
         print('overlap : {}'.format(sum(overlap_list) / len(overlap_list)))
         print('iou : {}'.format(sum(iou_list) / len(iou_list)))
 
-    writer.add_scalar('eval loss', sum(loss_list)/len(loss_list), epoch)
-    writer.add_scalar('overlap', sum(overlap_list) / len(overlap_list), epoch)
-    writer.add_scalar('alignment', sum(alignment_list)/len(alignment_list), epoch)
-    writer.add_scalar('iou', sum(iou_list) / len(iou_list), epoch)
+    if args.type == 'train' and not args.debug:
+        writer.add_scalar('eval loss', sum(loss_list) / len(loss_list), epoch)
+        writer.add_scalar('overlap', sum(overlap_list) / len(overlap_list), epoch)
+        writer.add_scalar('alignment', sum(alignment_list)/len(alignment_list), epoch)
+        writer.add_scalar('iou', sum(iou_list) / len(iou_list), epoch)
+
+    json_dict = {}
+    json_dict['origin'] = origin
+    json_dict['generation'] = result
+    
+
+    if not os.path.exists(CONFIG.LOG.output_dir):
+        os.makedirs(CONFIG.LOG.output_dir)
+
+    with open(os.path.join(CONFIG.LOG.output_dir, TIME_PREFIX + '.json'), 'w') as fp:
+        json.dump(json_dict, fp)
 
     t.update()
 
@@ -438,15 +444,17 @@ def main():
     args = load_args()
 
     # tensorboardX
-    if not args.debug:
+    if args.type == 'train' and not args.debug:
         writer = SummaryWriter(os.path.join(CONFIG.LOG.tensorboard_dir, TIME_PREFIX + '.log'))
+    else:
+        writer = None
     # load model
     model_config, model_tokenizer = get_config_and_tokenizer()
     model = load_model(args, model_config)
     # load dev
     model, dev = set_gpu(args.devices, model)
     # load weight
-    if args.weight == True or args.type == 'eval':
+    if args.weight_path != '':
         print('load weight from {}'.format(args.weight_path))
         model.load_state_dict(torch.load(args.weight_path))
 
@@ -459,13 +467,13 @@ def main():
 
         train_data_loader = load_data(CONFIG.DATA.train_data_path, args)
         val_data_loader = load_data(CONFIG.DATA.val_data_path, args)
-        train(model, model_tokenizer=model_tokenizer, 
-            dev=dev, optim=optim, train_data_loader=train_data_loader, test_data_loader=val_data_loader, writer = writer)
+        train(args, model, model_tokenizer=model_tokenizer, 
+            dev=dev, optim=optim, train_data_loader=train_data_loader, test_data_loader=val_data_loader, writer=writer)
                 
     elif args.type == 'eval' and CONFIG.MODEL.model == 'BertForMaskedLM':
         
         test_data_loader = load_data(CONFIG.DATA.test_data_path, args)
-        test(model, model_tokenizer, dev, test_data_loader=test_data_loader)
+        test(args, model, model_tokenizer, dev, test_data_loader=test_data_loader, writer=writer)
 
             
 if __name__ == '__main__':

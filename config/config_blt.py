@@ -11,7 +11,7 @@ CONFIG.DATA = EasyDict()
 CONFIG.DATA.train_data_path = './data/RICO_train.pkl'
 CONFIG.DATA.test_data_path = './data/RICO_test.pkl'
 CONFIG.DATA.val_data_path = './data/RICO_val.pkl'
-CONFIG.DATA.batch_size = 64
+CONFIG.DATA.batch_size = 128
 CONFIG.DATA.num_workers = 0
 
 # model param

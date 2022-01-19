@@ -51,8 +51,8 @@ class RicoDataset(Dataset):
                 for i in range(len(layout['label'])):
                     batch_data = batch_data + ' ' + str((layout['label'][i])) + ' ' + \
                                     str(math.ceil(layout['box'][i][0] * 127)) + ' ' + str(math.ceil(layout['box'][i][1] * 127)) + ' ' + \
-                                    str(math.ceil((layout['box'][i][2]-  layout['box'][i][0]) * 127)) + ' ' + \
-                                    str(math.ceil((layout['box'][i][3]-  layout['box'][i][1]) * 127))
+                                    str(math.ceil(layout['box'][i][2] * 127) - math.ceil(layout['box'][i][0] * 127)) + ' ' + \
+                                    str(math.ceil(layout['box'][i][3] * 127) - math.ceil(layout['box'][i][1] * 127))
                 self.data.append(batch_data.lstrip().rstrip())
         
         if debug:
